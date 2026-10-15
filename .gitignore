@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 .venv/
+delta_account_pnl_tp_sl_guard.log

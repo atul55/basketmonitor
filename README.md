@@ -64,9 +64,19 @@ open positions. If no positions are open at startup, it exits. Check Delta
 Exchange after a trigger; failed close orders are reported for manual
 follow-up.
 
-The console report shows unrealized PnL, realized cashflow, combined PnL, and
-the configured TP/SL thresholds on each poll. Console colors are enabled in an
-interactive terminal and can be disabled by setting `NO_COLOR`.
+The console report shows the last traded price (LTP) for each open position,
+unrealized PnL, realized cashflow, combined PnL, and the configured TP/SL
+thresholds on each poll. Console colors are enabled in an interactive terminal
+and can be disabled by setting `NO_COLOR`.
+
+For matched options (same underlying, expiry, and strike), the monitor also
+alerts in red on the console and via Telegram whenever Put LTP / Call LTP or
+Call LTP / Put LTP is at least 3. Alerts repeat on every poll while a ratio
+condition remains true.
+
+Errors are written to `delta_account_pnl_tp_sl_guard.log` beside the script.
+Delta API failures include request and response details; authentication
+headers and the Telegram bot token in request URLs are redacted.
 
 ## Live PnL dashboard
 

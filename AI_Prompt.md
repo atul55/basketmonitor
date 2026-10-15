@@ -86,3 +86,14 @@ Program delta_account_pnl_tp_sl_guard.py should be used for monitoring the posit
 3. Convert the chart into a new and improved format. 
 4. Make the line graph and the data points on the chart smooth.
 5. Show green color for the area of the chart above zero and red color for the area of the chart below zero.
+
+
+1. Show the LTP for the open positions in the Console Output. 
+
+
+1. Currently the script is failing with the Telegram Error. Create a log file which will capture any errors when it happen. For API errors capture the request url, Request headers, request body and response status, response headers and response body. 
+
+
+Monitor the below ratios and alert via telegram and console message (Red color) when any of these conditions are met. 
+1) Put LTP/ Call LTP >= 3
+2) Call LTP/Put LTP >=3

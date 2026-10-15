@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -49,10 +50,21 @@ STATUS_UPDATE_INTERVAL_SEC = 300
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
 CLOSE_MAX_RETRIES = 1
 CLOSE_RETRY_DELAY_SEC = 1.0
+OPTION_LTP_RATIO_THRESHOLD = 3.0
 DATABASE_PATH = Path(__file__).resolve().with_name("delta_account_pnl_history.sqlite3")
 CHART_PATH = Path(__file__).resolve().with_name("delta_account_unrealized_pnl.svg")
+LOG_PATH = Path(__file__).resolve().with_name("delta_account_pnl_tp_sl_guard.log")
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 8765
+LOGGER = logging.getLogger("basketmonitor")
+LOGGER.setLevel(logging.INFO)
+if not LOGGER.handlers:
+    log_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    log_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    )
+    LOGGER.addHandler(log_handler)
+LOGGER.propagate = False
 
 COLOR_RESET = "\033[0m"
 COLOR_GREEN = "\033[32m"
@@ -119,15 +131,208 @@ def get_auth_headers(method, path, query_string="", payload=""):
     }
 
 
+def redact_headers(headers):
+    sensitive_fragments = (
+        "api-key",
+        "authorization",
+        "cookie",
+        "signature",
+        "token",
+        "secret",
+    )
+    return {
+        key: (
+            "[REDACTED]"
+            if any(fragment in key.lower() for fragment in sensitive_fragments)
+            else value
+        )
+        for key, value in dict(headers or {}).items()
+    }
+
+
+def redact_body_value(value):
+    sensitive_keys = {
+        "api_key",
+        "api-key",
+        "authorization",
+        "password",
+        "secret",
+        "signature",
+        "token",
+    }
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[REDACTED]"
+                if str(key).lower() in sensitive_keys
+                else redact_body_value(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_body_value(item) for item in value]
+    if isinstance(value, bytes):
+        return redact_body_value(value.decode("utf-8", errors="replace"))
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return value.replace(TELEGRAM_BOT_TOKEN, "[REDACTED]")
+        return json.dumps(redact_body_value(parsed), ensure_ascii=False)
+    return value
+
+
+def log_http_error(
+    service,
+    reason,
+    method,
+    url,
+    request_headers,
+    request_body,
+    response=None,
+    response_body=None,
+    exception=None,
+):
+    safe_url = url.replace(TELEGRAM_BOT_TOKEN, "[REDACTED]")
+    context = {
+        "request": {
+            "method": method,
+            "url": safe_url,
+            "headers": redact_headers(request_headers),
+            "body": redact_body_value(request_body),
+        },
+        "response": {
+            "status": response.status if response is not None else None,
+            "headers": redact_headers(response.headers) if response is not None else None,
+            "body": redact_body_value(response_body),
+        },
+    }
+    if exception is not None:
+        context["exception"] = repr(exception).replace(
+            TELEGRAM_BOT_TOKEN,
+            "[REDACTED]",
+        )
+    LOGGER.error(
+        "%s request failed: %s\n%s",
+        service,
+        reason,
+        json.dumps(context, indent=2, ensure_ascii=False, default=str),
+    )
+
+
+async def request_api_json(session, method, url, headers=None, body=None):
+    """Make a Delta API request and log complete context for failures."""
+    request_headers = dict(session.headers)
+    request_headers.update(headers or {})
+    response = None
+    response_body = None
+    failure_logged = False
+
+    try:
+        async with session.request(
+            method,
+            url,
+            headers=headers,
+            data=body,
+        ) as response:
+            request_headers = response.request_info.headers
+            response_body = await response.text()
+            try:
+                data = json.loads(response_body)
+            except (TypeError, ValueError) as exc:
+                log_http_error(
+                    "Delta API",
+                    "Response was not valid JSON",
+                    method,
+                    url,
+                    request_headers,
+                    body,
+                    response,
+                    response_body,
+                    exc,
+                )
+                failure_logged = True
+                raise RuntimeError(f"Invalid JSON response from {url}.") from exc
+
+            if response.status >= 400 or (
+                not isinstance(data, dict) or data.get("success") is not True
+            ):
+                log_http_error(
+                    "Delta API",
+                    "HTTP failure or API returned success=false",
+                    method,
+                    url,
+                    request_headers,
+                    body,
+                    response,
+                    response_body,
+                )
+                failure_logged = True
+                raise RuntimeError(f"Delta API request failed for {url}: {data}")
+            return data
+    except Exception as exc:
+        if not failure_logged:
+            log_http_error(
+                "Delta API",
+                "Request raised an exception",
+                method,
+                url,
+                request_headers,
+                body,
+                response,
+                response_body,
+                exc,
+            )
+        raise
+
+
 async def send_telegram(session, message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    request_body = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    request_headers = dict(session.headers)
+    request_headers["Content-Type"] = "application/x-www-form-urlencoded"
+    response = None
+    response_body = None
     try:
-        async with session.post(
-            url,
-            data={"chat_id": TELEGRAM_CHAT_ID, "text": message},
-        ) as response:
-            await response.read()
+        async with session.post(url, data=request_body) as response:
+            request_headers = response.request_info.headers
+            response_body = await response.text()
+            try:
+                result = json.loads(response_body)
+            except (TypeError, ValueError):
+                result = None
+            if (
+                response.status >= 400
+                or not isinstance(result, dict)
+                or result.get("ok") is not True
+            ):
+                error = (
+                    f"Telegram request failed with HTTP {response.status}: "
+                    f"{response_body}"
+                )
+                log_http_error(
+                    "Telegram",
+                    error,
+                    "POST",
+                    url,
+                    request_headers,
+                    request_body,
+                    response,
+                    response_body,
+                )
+                print(f"[Telegram Error] {error}")
     except Exception as exc:
+        log_http_error(
+            "Telegram",
+            "Request raised an exception",
+            "POST",
+            url,
+            request_headers,
+            request_body,
+            response,
+            response_body,
+            exc,
+        )
         print(f"[Telegram Error] {exc}")
 
 
@@ -135,17 +340,143 @@ async def get_open_positions(session):
     """Fetch open positions using the same endpoint as the reference monitor."""
     path = "/v2/positions/margined"
     headers = get_auth_headers("GET", path)
-    async with session.get(BASE_URL + path, headers=headers) as response:
-        data = await response.json()
+    data = await request_api_json(session, "GET", BASE_URL + path, headers=headers)
 
-    if not data.get("success"):
-        raise RuntimeError(f"Positions API error: {data}")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected positions response: {data}")
 
     positions = data.get("result")
     if not isinstance(positions, list):
         raise RuntimeError(f"Unexpected positions response: {data}")
 
     return positions
+
+
+async def get_last_traded_price(session, symbol):
+    """Fetch a contract's last traded price from its public ticker."""
+    path = f"/v2/tickers/{symbol}"
+    data = await request_api_json(session, "GET", BASE_URL + path)
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected ticker response for {symbol}: {data}")
+
+    ticker = data.get("result")
+    if not isinstance(ticker, dict):
+        raise RuntimeError(f"Unexpected ticker response for {symbol}: {data}")
+
+    for key in ("last_traded_price", "close"):
+        value = ticker.get(key)
+        if value is None:
+            continue
+        try:
+            price = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Invalid {key} received for {symbol}: {value!r}."
+            ) from exc
+        if not math.isfinite(price):
+            raise RuntimeError(f"Non-finite {key} received for {symbol}: {value!r}.")
+        return price
+
+    raise RuntimeError(f"No last traded price found for {symbol}: {data}")
+
+
+async def get_open_position_last_traded_prices(session, details):
+    """Fetch one ticker price for each distinct open-position contract."""
+    position_symbols = [detail["symbol"] for detail in details]
+    if any(
+        not isinstance(symbol, str) or not symbol
+        for symbol in position_symbols
+    ):
+        raise RuntimeError("An open position is missing its product symbol.")
+
+    symbols = sorted(set(position_symbols))
+    prices = await asyncio.gather(
+        *(get_last_traded_price(session, symbol) for symbol in symbols)
+    )
+    return dict(zip(symbols, prices))
+
+
+def parse_option_symbol(symbol):
+    """Return option side and contract key for a Delta option symbol."""
+    if not isinstance(symbol, str):
+        return None
+
+    parts = symbol.split("-")
+    if len(parts) < 4 or parts[0] not in ("P", "C"):
+        return None
+
+    try:
+        strike = float(parts[2])
+    except ValueError:
+        return None
+    if not math.isfinite(strike):
+        return None
+
+    return parts[0], (parts[1].upper(), parts[3], strike)
+
+
+def get_option_ltp_ratio_alerts(
+    details,
+    last_traded_prices,
+    threshold=OPTION_LTP_RATIO_THRESHOLD,
+):
+    """Build alerts for matched put/call pairs whose LTP ratio reaches threshold."""
+    contracts = {}
+    for detail in details:
+        symbol = detail["symbol"]
+        parsed = parse_option_symbol(symbol)
+        if parsed is None or symbol not in last_traded_prices:
+            continue
+        option_side, contract_key = parsed
+        sides = contracts.setdefault(contract_key, {"P": {}, "C": {}})
+        sides[option_side][symbol] = last_traded_prices[symbol]
+
+    alerts = []
+    for contract_key in sorted(contracts):
+        sides = contracts[contract_key]
+        for put_symbol, put_price in sorted(sides["P"].items()):
+            for call_symbol, call_price in sorted(sides["C"].items()):
+                if (
+                    put_price < 0
+                    or call_price < 0
+                    or (put_price == 0 and call_price == 0)
+                ):
+                    continue
+
+                if call_price == 0:
+                    put_call_ratio = math.inf
+                else:
+                    put_call_ratio = put_price / call_price
+                if put_call_ratio >= threshold:
+                    ratio_text = (
+                        "infinity"
+                        if math.isinf(put_call_ratio)
+                        else f"{put_call_ratio:.2f}"
+                    )
+                    alerts.append(
+                        f"Put/Call LTP ratio >= {threshold:g}: "
+                        f"{put_symbol} {put_price:g} / {call_symbol} "
+                        f"{call_price:g} = {ratio_text}"
+                    )
+
+                if put_price == 0:
+                    call_put_ratio = math.inf
+                else:
+                    call_put_ratio = call_price / put_price
+                if call_put_ratio >= threshold:
+                    ratio_text = (
+                        "infinity"
+                        if math.isinf(call_put_ratio)
+                        else f"{call_put_ratio:.2f}"
+                    )
+                    alerts.append(
+                        f"Call/Put LTP ratio >= {threshold:g}: "
+                        f"{call_symbol} {call_price:g} / {put_symbol} "
+                        f"{put_price:g} = {ratio_text}"
+                    )
+
+    return alerts
 
 
 def compute_total_pnl(positions):
@@ -833,11 +1164,15 @@ async def send_close_order(session, product_id, side, quantity):
     body = json.dumps(order_payload, separators=(",", ":"))
     headers = get_auth_headers("POST", path, "", body)
 
-    async with session.post(BASE_URL + path, headers=headers, data=body) as response:
-        result = await response.json()
-
-    if not result.get("success", False):
-        raise RuntimeError(f"Order rejected: {result}")
+    result = await request_api_json(
+        session,
+        "POST",
+        BASE_URL + path,
+        headers=headers,
+        body=body,
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected order response: {result}")
 
     return result
 
@@ -885,6 +1220,11 @@ async def close_single_position(
             }
         except Exception as exc:
             last_error = str(exc)
+            LOGGER.exception(
+                "Close order attempt %d failed for %s",
+                attempt + 1,
+                symbol,
+            )
             if attempt < max_retries:
                 print(
                     f"[Retry] Close order failed for {symbol} "
@@ -969,10 +1309,19 @@ def format_amounts_by_asset(amounts, color=False):
     )
 
 
-def format_pnl_report(details, pnl_by_asset, total_pnl, timestamp=None, color=None):
+def format_pnl_report(
+    details,
+    pnl_by_asset,
+    total_pnl,
+    timestamp=None,
+    color=None,
+    last_traded_prices=None,
+):
     """Format a readable console snapshot with unrealized PnL emphasized."""
     if color is None:
         color = supports_color()
+    if last_traded_prices is None:
+        last_traded_prices = {}
 
     unrealized_by_asset = {}
     realized_by_asset = {}
@@ -997,9 +1346,15 @@ def format_pnl_report(details, pnl_by_asset, total_pnl, timestamp=None, color=No
         len("SIZE"),
         *(len(f"{detail['size']:g}") for detail in details),
     )
-    separator_width = (
-        symbol_width + asset_width + size_width + 51
+    ltp_width = max(
+        len("LTP"),
+        *(
+            len(f"{last_traded_prices[detail['symbol']]:g}")
+            for detail in details
+            if detail["symbol"] in last_traded_prices
+        ),
     )
+    separator_width = symbol_width + asset_width + size_width + ltp_width + 53
     timestamp = timestamp or local_datetime().isoformat(timespec="seconds")
 
     lines = [
@@ -1024,20 +1379,28 @@ def format_pnl_report(details, pnl_by_asset, total_pnl, timestamp=None, color=No
         colorize("-" * separator_width, COLOR_CYAN, color),
         (
             f"{'POSITION':<{symbol_width}}  {'ASSET':<{asset_width}}  "
-            f"{'SIZE':>{size_width}}  {'UNREALIZED':>12}  "
+            f"{'SIZE':>{size_width}}  {'LTP':>{ltp_width}}  "
+            f"{'UNREALIZED':>12}  "
             f"{'REALIZED':>12}  {'COMBINED':>12}"
         ),
         (
             f"{'-' * symbol_width}  {'-' * asset_width}  "
-            f"{'-' * size_width}  {'-' * 12}  {'-' * 12}  {'-' * 12}"
+            f"{'-' * size_width}  {'-' * ltp_width}  "
+            f"{'-' * 12}  {'-' * 12}  {'-' * 12}"
         ),
     ]
 
     for detail in details:
+        symbol = detail["symbol"]
+        ltp = last_traded_prices.get(symbol)
+        ltp_text = (
+            f"{ltp:>{ltp_width}g}" if ltp is not None else "N/A".rjust(ltp_width)
+        )
         lines.append(
-            f"{str(detail['symbol'] or 'UNKNOWN'):<{symbol_width}}  "
+            f"{str(symbol or 'UNKNOWN'):<{symbol_width}}  "
             f"{detail['settling_asset']:<{asset_width}}  "
             f"{detail['size']:>{size_width}g}  "
+            f"{ltp_text}  "
             f"{colorize_amount(detail['unrealized_cashflow'], color, 12)}  "
             f"{colorize_amount(detail['realized_cashflow'], color, 12)}  "
             f"{colorize_amount(detail['pnl'], color, 12)}"
@@ -1063,6 +1426,10 @@ async def monitor_loop():
             try:
                 positions = await get_open_positions(session)
                 pnl_by_asset, details = compute_total_pnl(positions)
+                last_traded_prices = await get_open_position_last_traded_prices(
+                    session,
+                    details,
+                )
                 polled_at = record_pnl_poll(details)
                 write_unrealized_pnl_chart()
 
@@ -1080,7 +1447,27 @@ async def monitor_loop():
                     break
 
                 total_pnl = sum(pnl_by_asset.values())
-                print(format_pnl_report(details, pnl_by_asset, total_pnl, polled_at))
+                print(
+                    format_pnl_report(
+                        details,
+                        pnl_by_asset,
+                        total_pnl,
+                        polled_at,
+                        last_traded_prices=last_traded_prices,
+                    )
+                )
+
+                ratio_alerts = get_option_ltp_ratio_alerts(
+                    details,
+                    last_traded_prices,
+                )
+                if ratio_alerts:
+                    ratio_alert_message = (
+                        "⚠️ OPTION LTP RATIO ALERT ⚠️\n"
+                        + "\n".join(ratio_alerts)
+                    )
+                    print(colorize(ratio_alert_message, COLOR_RED))
+                    await send_telegram(session, ratio_alert_message)
 
                 now = time.time()
                 if now - last_status_sent >= STATUS_UPDATE_INTERVAL_SEC:
@@ -1121,6 +1508,7 @@ async def monitor_loop():
 
             except Exception as exc:
                 error = f"[Monitor Error] {exc}"
+                LOGGER.exception("Monitor iteration failed")
                 print(colorize(error, COLOR_RED))
                 await send_telegram(session, f"⚠️ Monitor error: {exc}")
                 await asyncio.sleep(POLL_INTERVAL_SEC)
