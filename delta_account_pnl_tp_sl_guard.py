@@ -327,6 +327,9 @@ h1{font-size:clamp(25px,4vw,38px);letter-spacing:-.04em;margin:8px 0 6px}
 .card{padding:16px 18px;min-height:94px}
 .label{color:#8492a9;font-size:11px;text-transform:uppercase;letter-spacing:.11em;font-weight:700}
 .value{font-variant-numeric:tabular-nums;font-size:23px;font-weight:700;letter-spacing:-.025em;margin-top:9px}
+.combined-summary{display:grid;gap:4px;text-align:right;margin-left:auto}
+.combined-label{color:#8492a9;font-size:10px;text-transform:uppercase;letter-spacing:.12em;font-weight:700}
+.combined-value{font-variant-numeric:tabular-nums;font-size:19px;font-weight:700;letter-spacing:-.02em}
 .positive{color:#55dfab}.negative{color:#ff7185}.neutral{color:#e8eef8}
 .panel{padding:20px 20px 14px;overflow:hidden}
 .panel-head{display:flex;justify-content:space-between;align-items:center;gap:15px;margin:0 2px 8px;padding-bottom:12px;border-bottom:1px solid #202b3d}
@@ -339,7 +342,8 @@ h2{font-size:16px;margin:0;letter-spacing:-.01em}
 .plot-wrap{position:relative;width:100%;height:min(62vh,540px);min-height:340px}
 svg{width:100%;height:100%;overflow:visible}
 .axis-label{fill:#8290a6;font-size:11px;font-variant-numeric:tabular-nums}
-.grid{stroke:#263246;stroke-width:1}.zero{stroke:#7c8ba3;stroke-width:1.3;stroke-dasharray:5 5}
+.grid{stroke:#263246;stroke-width:1}.zero{stroke:#f0c66a;stroke-width:2.4}
+.zero-label{fill:#f0c66a;font-size:10px;font-weight:800;letter-spacing:.1em;paint-order:stroke;stroke:#101a2b;stroke-width:5px;stroke-linejoin:round}
 .axis{stroke:#536178;stroke-width:1}
 .series{fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 2px 5px #0008)}
 .area{stroke:none}
@@ -351,21 +355,21 @@ svg{width:100%;height:100%;overflow:visible}
 .tooltip{position:absolute;z-index:2;display:none;pointer-events:none;min-width:190px;max-width:min(320px,80vw);padding:12px 14px;background:#101827;border:1px solid #3b4b65;border-radius:10px;box-shadow:0 12px 32px #0009;font-size:12px}
 .tip-time{font-weight:700;color:#f0f5ff;margin-bottom:8px}.tip-row{display:flex;justify-content:space-between;gap:22px;color:#9fadc2;margin-top:5px}.tip-val{font-variant-numeric:tabular-nums;font-weight:700;color:#eaf0fa}
 .footer{color:#68778e;font-size:11px;margin:13px 3px 0}
-@media(max-width:620px){.shell{padding-top:22px}.panel{padding:14px 10px}.panel-head{align-items:flex-start;flex-direction:column}.meta{text-align:left}.plot-wrap{height:380px}.live{font-size:0;padding:10px}.live .dot{margin:0}}
+@media(max-width:620px){.shell{padding-top:22px}.panel{padding:14px 10px}.panel-head{align-items:flex-start;flex-direction:column}.combined-summary{margin-left:0;text-align:left}.meta{text-align:left}.plot-wrap{height:380px}.live{font-size:0;padding:10px}.live .dot{margin:0}}
 </style>
 </head>
 <body>
 <main class="shell">
 <header>
-  <div><div class="eyebrow">Delta Exchange · Account monitor</div><h1>Unrealized PnL</h1><div class="subtitle">Live settlement-asset performance across open positions</div></div>
+  <div><div class="eyebrow">Delta Exchange · Account monitor</div><h1>Combined PnL</h1><div class="subtitle">Live settlement-asset performance across open positions</div></div>
   <div class="live"><span class="dot"></span>LIVE · refreshes every 5 seconds</div>
 </header>
 <section class="cards" id="cards"></section>
 <section class="panel">
-  <div class="panel-head"><h2>PnL history</h2><div class="meta" id="chart-meta">Waiting for first poll…</div></div>
+  <div class="panel-head"><h2>PnL history</h2><div class="combined-summary"><span class="combined-label">Combined PnL</span><strong class="combined-value neutral" id="combined-pnl">—</strong><div class="meta" id="chart-meta">Waiting for first poll…</div></div></div>
   <div class="legend" id="legend"></div>
-  <div class="plot-wrap"><svg id="chart" viewBox="0 0 1100 520" role="img" aria-label="Interactive unrealized PnL chart"></svg><div class="tooltip" id="tooltip"></div></div>
-  <div class="footer">Move the crosshair over the chart to inspect the nearest poll. Values use the monitor’s Delta-matching calculation.</div>
+  <div class="plot-wrap"><svg id="chart" viewBox="0 0 1100 520" role="img" aria-label="Interactive combined PnL chart"></svg><div class="tooltip" id="tooltip"></div></div>
+  <div class="footer">Green shading marks profit and red shading marks loss relative to zero. Move the crosshair to inspect a poll. Values use the monitor’s Delta-matching calculation.</div>
 </section>
 </main>
 <script>
@@ -374,7 +378,7 @@ const colors=["#6ea8fe","#f77c91","#55d6a5","#c59bff","#ffbd69","#54d2df","#ff8c
 const hidden=new Set(); let latestData=null;
 const svg=document.getElementById("chart"), tip=document.getElementById("tooltip");
 function node(tag,attrs={},text){const e=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,v);if(text!==undefined)e.textContent=text;return e}
-function fmt(v){return `${v>=0?"+":""}${Number(v).toFixed(2)}`}
+function fmt(v){const n=Number(v);return n===0?"$0.00":`${n>0?"+":"-"}$${Math.abs(n).toFixed(2)}`}
 function cls(v){return v>0?"positive":v<0?"negative":"neutral"}
 function smoothPath(points){
  if(points.length<2)return "";
@@ -400,13 +404,16 @@ function draw(data){
  latestData=data;renderCards(data);renderLegend(data);svg.replaceChildren();tip.style.display="none";
  const polls=data.polls, assets=data.assets.filter(a=>!hidden.has(a)),pw=W-M.l-M.r,ph=H-M.t-M.b;
  const meta=document.getElementById("chart-meta");
+ const latest=polls.at(-1),combined=latest?data.assets.reduce((total,a)=>total+Number(latest.values[a]||0),0):null;
+ const combinedValue=document.getElementById("combined-pnl");
+ combinedValue.textContent=combined===null?"—":fmt(combined);
+ combinedValue.className=`combined-value ${combined===null?"neutral":cls(combined)}`;
  meta.textContent=`${polls.length} polls · ${data.timezone}${polls.length?` · latest #${data.latest_poll_id}`:""}`;
  if(!polls.length){svg.append(node("text",{x:W/2,y:H/2,"text-anchor":"middle",class:"empty"},"No poll history yet"));return}
  let vals=[];for(const p of polls)for(const a of assets)vals.push(Number(p.values[a]||0));
  if(!vals.length)vals=[0];let lo=Math.min(0,...vals),hi=Math.max(0,...vals),span=hi-lo||1;lo-=span*.1;hi+=span*.1;
  const x=i=>M.l+(polls.length<2?pw/2:i*pw/(polls.length-1)),y=v=>M.t+(hi-v)*ph/(hi-lo);
  for(let j=0;j<=5;j++){const v=hi-(hi-lo)*j/5,yy=y(v);svg.append(node("line",{x1:M.l,y1:yy,x2:W-M.r,y2:yy,class:"grid"}));svg.append(node("text",{x:M.l-12,y:yy+4,"text-anchor":"end",class:"axis-label"},fmt(v)))}
- svg.append(node("line",{x1:M.l,y1:y(0),x2:W-M.r,y2:y(0),class:"zero"}));
  svg.append(node("line",{x1:M.l,y1:M.t,x2:M.l,y2:H-M.b,class:"axis"}));
  svg.append(node("line",{x1:M.l,y1:H-M.b,x2:W-M.r,y2:H-M.b,class:"axis"}));
  svg.append(node("text",{x:18,y:H/2,transform:`rotate(-90 18 ${H/2})`,"text-anchor":"middle",class:"axis-label"},"PnL by settlement asset"));
@@ -417,23 +424,26 @@ function draw(data){
   svg.append(node("text",{...label,x:x(i),y:H-M.b+20},d.toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"})));
   svg.append(node("text",{...label,x:x(i),y:H-M.b+35},`${d.toLocaleTimeString()} · #${poll.poll_id}`));
  }
- const defs=node("defs"),clip=node("clipPath",{id:"plot-clip"});
+ const zeroY=y(0),defs=node("defs"),clip=node("clipPath",{id:"plot-clip"});
  clip.append(node("rect",{x:M.l,y:M.t,width:pw,height:ph}));defs.append(clip);
- assets.forEach(a=>{
-  const ai=data.assets.indexOf(a),gradient=node("linearGradient",{id:`fill-${ai}`,x1:"0",y1:"0",x2:"0",y2:"1"});
-  gradient.append(node("stop",{offset:"0%","stop-color":colors[ai%colors.length],"stop-opacity":".28"}),node("stop",{offset:"100%","stop-color":colors[ai%colors.length],"stop-opacity":".015"}));
-  defs.append(gradient);
- });
+ const profitClip=node("clipPath",{id:"profit-area-clip"});
+ profitClip.append(node("rect",{x:M.l,y:M.t,width:pw,height:zeroY-M.t}));defs.append(profitClip);
+ const lossClip=node("clipPath",{id:"loss-area-clip"});
+ lossClip.append(node("rect",{x:M.l,y:zeroY,width:pw,height:H-M.b-zeroY}));defs.append(lossClip);
  svg.append(defs);
  const seriesLayer=node("g",{"clip-path":"url(#plot-clip)"});svg.append(seriesLayer);
  assets.forEach(a=>{
   const ai=data.assets.indexOf(a),color=colors[ai%colors.length],coords=polls.map((p,i)=>({x:x(i),y:y(Number(p.values[a]||0))})),curve=smoothPath(coords);
   if(coords.length>1){
-   seriesLayer.append(node("path",{d:`${curve} L ${coords.at(-1).x} ${y(0)} L ${coords[0].x} ${y(0)} Z`,class:"area",fill:`url(#fill-${ai})`}));
+   const areaPath=`${curve} L ${coords.at(-1).x} ${zeroY} L ${coords[0].x} ${zeroY} Z`;
+   seriesLayer.append(node("path",{d:areaPath,class:"area",fill:"#35d39a","fill-opacity":".2","clip-path":"url(#profit-area-clip)"}));
+   seriesLayer.append(node("path",{d:areaPath,class:"area",fill:"#ff647c","fill-opacity":".2","clip-path":"url(#loss-area-clip)"}));
    seriesLayer.append(node("path",{d:curve,class:"series",stroke:color}));
   }
-  coords.forEach(point=>seriesLayer.append(node("circle",{cx:point.x,cy:point.y,r:3.4,class:"point",fill:color})));
+  coords.forEach(point=>seriesLayer.append(node("circle",{cx:point.x,cy:point.y,r:4,class:"point",fill:color})));
  });
+ svg.append(node("line",{x1:M.l,y1:zeroY,x2:W-M.r,y2:zeroY,class:"zero"}));
+ svg.append(node("text",{x:W-M.r-8,y:zeroY-8,"text-anchor":"end",class:"zero-label"},"ZERO PROFIT"));
  const cross=node("g");const vline=node("line",{class:"crosshair",y1:M.t,y2:H-M.b});const hline=node("line",{class:"crosshair",x1:M.l,x2:W-M.r});const focus=node("g");cross.append(vline,hline,focus);svg.append(cross);
  const hit=node("rect",{x:M.l,y:M.t,width:pw,height:ph,class:"hit-area"});
  hit.addEventListener("pointermove",ev=>{const matrix=svg.getScreenCTM(),pointer=svg.createSVGPoint();pointer.x=ev.clientX;pointer.y=ev.clientY;const local=pointer.matrixTransform(matrix.inverse()),px=local.x;let idx=0;for(let i=1;i<polls.length;i++)if(Math.abs(x(i)-px)<Math.abs(x(idx)-px))idx=i;vline.setAttribute("x1",x(idx));vline.setAttribute("x2",x(idx));hline.setAttribute("y1",local.y);hline.setAttribute("y2",local.y);focus.replaceChildren();assets.forEach(a=>{const ai=data.assets.indexOf(a);focus.append(node("circle",{cx:x(idx),cy:y(Number(polls[idx].values[a]||0)),r:6,class:"focus",fill:colors[ai%colors.length]}))});const r=svg.getBoundingClientRect();showTip(data,idx,ev.clientX-r.left,ev.clientY-r.top)});
@@ -551,6 +561,8 @@ def write_unrealized_pnl_chart(
     def y_for(value):
         return top + plot_height * (high - value) / (high - low)
 
+    zero_y = y_for(0.0)
+
     def smooth_path(coordinates):
         if len(coordinates) < 2:
             return ""
@@ -582,6 +594,15 @@ def write_unrealized_pnl_chart(
             f'font-weight="{weight}" fill="{fill}">{html.escape(str(text))}</text>'
         )
 
+    def format_currency(value):
+        sign = "-" if value < 0 else "+" if value > 0 else ""
+        return f"{sign}${abs(value):,.2f}"
+
+    latest_combined_pnl = (
+        sum(points[-1][1] for points in series.values())
+        if poll_rows
+        else None
+    )
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}">',
@@ -591,25 +612,45 @@ def write_unrealized_pnl_chart(
         '<stop offset="0%" stop-color="#111d30"/><stop offset="100%" stop-color="#0c1422"/>'
         '</linearGradient><clipPath id="plot-clip"><rect '
         f'x="{left}" y="{top}" width="{plot_width}" height="{plot_height}" rx="8"/>'
-        '</clipPath>',
-        *[
-            f'<linearGradient id="series-fill-{index}" x1="0" y1="0" x2="0" y2="1">'
-            f'<stop offset="0%" stop-color="{color}" stop-opacity=".28"/>'
-            f'<stop offset="100%" stop-color="{color}" stop-opacity=".015"/>'
-            '</linearGradient>'
-            for index, color in enumerate(palette)
-        ],
+        f'</clipPath><clipPath id="profit-area-clip"><rect x="{left}" y="{top}" '
+        f'width="{plot_width}" height="{zero_y - top:.1f}"/></clipPath>'
+        f'<clipPath id="loss-area-clip"><rect x="{left}" y="{zero_y:.1f}" '
+        f'width="{plot_width}" height="{top + plot_height - zero_y:.1f}"/></clipPath>',
         '</defs>',
         f'<rect width="{width}" height="{height}" rx="18" fill="url(#background)"/>',
         f'<rect x="18" y="15" width="{width - 36}" height="{height - 30}" '
         'rx="15" fill="url(#chart-panel)" stroke="#24344c"/>',
-        svg_text(left, 37, "Open-Position Unrealized PnL", fill="#edf4ff", size=22, weight="700"),
+        svg_text(left, 37, "Combined PnL by Settlement Asset", fill="#edf4ff", size=22, weight="700"),
         svg_text(
             left,
             60,
             f"Settlement asset totals · {local_timezone_label()}",
             fill="#8d9bb2",
             size=13,
+        ),
+        svg_text(
+            width - 42,
+            34,
+            "COMBINED PNL",
+            anchor="end",
+            fill="#8d9bb2",
+            size=10,
+            weight="700",
+        ),
+        svg_text(
+            width - 42,
+            59,
+            format_currency(latest_combined_pnl) if latest_combined_pnl is not None else "—",
+            anchor="end",
+            fill=(
+                "#55d6a5"
+                if latest_combined_pnl is not None and latest_combined_pnl > 0
+                else "#ff7185"
+                if latest_combined_pnl is not None and latest_combined_pnl < 0
+                else "#d7e2f2"
+            ),
+            size=19,
+            weight="700",
         ),
     ]
 
@@ -621,15 +662,9 @@ def write_unrealized_pnl_chart(
             f'y2="{y:.1f}" stroke="#263246" stroke-width="1"/>'
         )
         parts.append(
-            svg_text(left - 12, y + 4, f"{value:+.2f}", anchor="end", fill="#9baac0")
+            svg_text(left - 12, y + 4, format_currency(value), anchor="end", fill="#9baac0")
         )
 
-    zero_y = y_for(0.0)
-    parts.append(
-        f'<line x1="{left}" y1="{zero_y:.1f}" x2="{left + plot_width}" '
-        f'y2="{zero_y:.1f}" stroke="#7c8ba3" stroke-width="1.5" '
-        'stroke-dasharray="5 5"/>'
-    )
     parts.append(
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_height}" '
         f'stroke="#536178" stroke-width="1"/>'
@@ -706,10 +741,17 @@ def write_unrealized_pnl_chart(
                 curve = smooth_path(coordinates)
                 first_x = coordinates[0][0]
                 last_x = coordinates[-1][0]
+                area_path = (
+                    f"{curve} L {last_x:.1f},{zero_y:.1f} "
+                    f"L {first_x:.1f},{zero_y:.1f} Z"
+                )
                 parts.append(
-                    f'<path d="{curve} L {last_x:.1f},{zero_y:.1f} '
-                    f'L {first_x:.1f},{zero_y:.1f} Z" '
-                    f'fill="url(#series-fill-{index % len(palette)})"/>'
+                    f'<path d="{area_path}" fill="#35d39a" fill-opacity=".2" '
+                    'clip-path="url(#profit-area-clip)"/>'
+                )
+                parts.append(
+                    f'<path d="{area_path}" fill="#ff647c" fill-opacity=".2" '
+                    'clip-path="url(#loss-area-clip)"/>'
                 )
                 parts.append(
                     f'<path d="{curve}" fill="none" stroke="{color}" '
@@ -717,7 +759,7 @@ def write_unrealized_pnl_chart(
                 )
             for x, y in coordinates:
                 parts.append(
-                    f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" '
+                    f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" '
                     f'fill="{color}" stroke="#0c1422" stroke-width="1.5"/>'
                 )
             parts.append("</g>")
@@ -728,6 +770,26 @@ def write_unrealized_pnl_chart(
                 f'stroke="{color}" stroke-width="3" stroke-linecap="round"/>'
             )
             parts.append(svg_text(left + plot_width + 56, legend_y, asset))
+
+    parts.append(
+        f'<line x1="{left}" y1="{zero_y:.1f}" x2="{left + plot_width}" '
+        f'y2="{zero_y:.1f}" stroke="#f0c66a" stroke-width="2.4"/>'
+    )
+    parts.append(
+        f'<rect x="{left + plot_width - 92}" y="{zero_y - 19:.1f}" '
+        'width="92" height="17" rx="4" fill="#142238" stroke="#43536a"/>'
+    )
+    parts.append(
+        svg_text(
+            left + plot_width - 8,
+            zero_y - 7,
+            "ZERO PROFIT",
+            anchor="end",
+            fill="#f0c66a",
+            size=9,
+            weight="700",
+        )
+    )
 
     if poll_rows:
         parts.append(

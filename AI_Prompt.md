@@ -82,3 +82,7 @@ Program delta_account_pnl_tp_sl_guard.py should be used for monitoring the posit
 3. Make a new and improved format of the chart
 
 1. Show the line for zero profit prominently on the chart
+2. Show the dollar sign on the value for Combined PnL on the top right of the chart. 
+3. Convert the chart into a new and improved format. 
+4. Make the line graph and the data points on the chart smooth.
+5. Show green color for the area of the chart above zero and red color for the area of the chart below zero.
