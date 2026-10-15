@@ -49,7 +49,7 @@ Run only the monitor for the strategy whose positions you want to manage.
 ### 1 DTE Short Straddle Strategy
 
 ```powershell
-.\.venv\Scripts\python.exe .\delta_account_pnl_tp_sl_guard.py
+python3 delta_account_pnl_tp_sl_guard.py
 ```
 
 The account-wide monitor reads positions from Delta Exchange's
