@@ -75,3 +75,10 @@ Update the console output to show the TP and SL value on the each poll output.
 Format the readme file and organize it better. 
 Program delta_per_expiry_hybrid_stop_fixed.py should be used for monitoring the positions taken with "Ratio Spread Strategy"
 Program delta_account_pnl_tp_sl_guard.py should be used for monitoring the positions taken with "1 DTE Short Straddle" Strategy. 
+
+
+1. Make the line in the PnL smoother
+2. X Axis should show the coordinates in details
+3. Make a new and improved format of the chart
+
+1. Show the line for zero profit prominently on the chart

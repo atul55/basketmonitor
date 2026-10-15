@@ -75,12 +75,15 @@ When `delta_account_pnl_tp_sl_guard.py` starts, it serves a local dashboard at:
 **http://127.0.0.1:8765/**
 
 The dashboard includes interactive PnL history grouped by settlement asset,
-selectable chart series, and crosshair tooltips showing the poll time and PnL
-values. It checks for new polls every five seconds and updates automatically.
-The server listens only on the local computer and stops when the monitor exits.
+selectable chart series, smoothed curves with poll markers, and crosshair
+tooltips showing the exact local timestamp, poll ID, open-position count, and
+PnL values. The x-axis labels include the date, time, and poll ID. It checks
+for new polls every five seconds and updates automatically. The server listens
+only on the local computer and stops when the monitor exits.
 
 The monitor also regenerates `delta_account_unrealized_pnl.svg` as a static
-chart snapshot on each poll.
+dark-themed chart snapshot on each poll, with the same smoothed lines and
+detailed date/time/poll coordinates.
 
 ## PnL history database
 
